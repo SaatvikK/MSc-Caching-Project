@@ -37,6 +37,7 @@ class CacheState(Generic[V]):
     """
     Move time forward without changing contents.
     """
+
     assert t1 == self.t + 1
     return CacheState(t=t1, C=self.C, size=self.size, policy = self.policy, polName = self.polName)
 
@@ -47,7 +48,7 @@ class CacheState(Generic[V]):
     Pre-state:  C_t = (t, C, k)
     Post-state: C_{t+1} = (t+1, C', k)
 
-    where:
+    where:self.t + 1
       if rmv is None: C1 = C
       else:           C1 = C \ {rmv}
 

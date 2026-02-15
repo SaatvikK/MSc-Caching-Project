@@ -17,30 +17,38 @@ seq = seq.add(23)
 seq = seq.add(2)
 
 
-## Construct cache network
+## Construct cache networks
 T = int
 cacheSize = 2
-### Line of Caches (2):
 cs = CacheState[T](t = 0, C = frozenset(), size = cacheSize, policy = policyLRU, polName = "lru")
-states = {
+
+### Line of Caches (2):
+lineStates = {
   0: cs,
   1: cs
 }
-topology = {
+lineTopology = {
   "root": 0,
   0: [1],
   1: []
 }
 
+### Tree topology where root has 2 children.
+treeStates = {
+  0: cs,
+  1: cs,
+  2: cs
+}
 
-"""
-C1
-^
-C0
-^+
-req
-"""
-net = CN(N = topology, S = states, t = 0)
+treeTopology = {
+  "root": 0,
+  0: [1,2],
+  1: [],
+  2: [],
+}
+
+
+net = CN(N = treeTopology, S = treeStates, t = 0)
 
 print("Sequence t =", seq.t)
 print("Requests =", seq.S)

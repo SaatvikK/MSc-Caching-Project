@@ -1,6 +1,7 @@
 from cache import CacheState
 from dataclasses import dataclass
 from typing import FrozenSet, Tuple, Optional, TypeVar, Generic
+import random as rand
 
 """
 graph of a network:
@@ -35,17 +36,14 @@ class CacheNetwork:
   t: int
 
   def step(self, i: I):
-    print([C.t for C in self.S.values()])
     assert all(C.t == self.t for C in self.S.values())
 
     hit, newS = self.nodeReq(0, i, self.S)
-    print("==")
-    for k in range(len(self.S)):
-      print(k)
-      node = self.S[k]
+    for k in range(len(newS)):
+      cache = newS[k]
+      if cache.t != self.t + 1:
+        newS[k] = cache.stepTime(self.t + 1)
 
-      self.S[k] = node.stepTime(self.t + 1)
-    print("==")
     return CacheNetwork(
       N=self.N,
       S=newS,
@@ -64,7 +62,14 @@ class CacheNetwork:
       return True, newS
 
     # forward to children
-    for child in self.N[node]:
+    children = self.N[node]
+    child = None
+    if len(children) > 1:
+      child = rand.randint(0, len(children))
+    elif len(children) == 1:
+      child = children[0]
+    
+    if child != None:
       hit, newS = self.nodeReq(child, i, S)
       if hit:
         # propagate upstream

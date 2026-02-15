@@ -26,14 +26,12 @@ class Stats:
 
 
 def run_LRU(seq: Sequence, net: CacheNetwork, verbose: bool = True) -> Stats:
-  if verbose:
-    print("====== Beginning Caching Process: LRU ======")
+  if verbose: print("====== Beginning Caching Process: LRU ======")
 
   h, m = 0, 0
 
   for r in seq.S:
     net, hit = net.step(r.i)
-
     if hit:
       h += 1
       if verbose:
