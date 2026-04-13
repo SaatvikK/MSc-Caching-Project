@@ -1,6 +1,6 @@
 # policies.py
 from typing import Tuple, FrozenSet
-from cache import CacheState, I, T
+from cache import CacheNode, I, T
 
 # ---------- Classical LRU (value = last_access_time) ----------
 
@@ -8,7 +8,7 @@ def argminTimeStamp(C: FrozenSet[Tuple[I, T]]) -> Tuple[I, T]:
   # returns (i, ts) with minimal ts
   return min(C, key=lambda x: x[1])
 
-def policyLRU(C_t: CacheState[T], r_i: I, r_t: T, ttl = None) -> Tuple[bool, CacheState[T]]:
+def policyLRU(C_t: CacheNode[T], r_i: I, r_t: T, ttl = None) -> Tuple[bool, CacheNode[T]]:
   """
   δ_LRU(C_t, r_t) = (hit, C_{t+1})
 
@@ -41,7 +41,7 @@ def policyLRU(C_t: CacheState[T], r_i: I, r_t: T, ttl = None) -> Tuple[bool, Cac
 # ---------- TTL "R-policy" (value = remaining_ttl) ----------
 # From Florin paper
 
-def policyRTTL(C_t: CacheState[T], r_i: I, r_t: T, ttl: T) -> Tuple[bool, CacheState[T]]:
+def policyRTTL(C_t: CacheNode[T], r_i: I, r_t: T, ttl: T) -> Tuple[bool, CacheNode[T]]:
   """
   δ_R(C_t, r_t) = (hit, C_{t+1})
 
@@ -66,7 +66,7 @@ def policyRTTL(C_t: CacheState[T], r_i: I, r_t: T, ttl: T) -> Tuple[bool, CacheS
   Cbar = frozenset((j, th - 1) for (j, th) in C_t.C if th - 1 > 0)
 
   # build intermediate state at same t (still pre-time-increment)
-  C_mid = CacheState(t=C_t.t, C=Cbar, size=C_t.size)
+  C_mid = CacheNode(t=C_t.t, C=Cbar, size=C_t.size, policy=C_t.policy, polName=C_t.polName, root=C_t.root, leaf=C_t.leaf)
 
   # (2) classify after expiry
   old = C_mid.get(r_i)

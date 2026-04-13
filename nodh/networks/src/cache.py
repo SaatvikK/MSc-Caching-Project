@@ -7,11 +7,11 @@ T = int
 V = TypeVar("V")  # value (timestamp, ttl, etc.)
 
 @dataclass(frozen=True)
-class CacheState(Generic[V]):
+class CacheNode(Generic[V]):
   """
-  Cache state at time t:
+  Cache node at time t:
 
-    C_t = (t, C, k)
+    C_t = (t, C, k, root, leaf)
     where C is a frozenset of (i, v) entries, |C| <= k.
 
   Invariant (uniqueness):
@@ -22,6 +22,8 @@ class CacheState(Generic[V]):
   size: int
   policy: int
   polName: str
+  root: bool
+  leaf: bool
 
   def __post_init__(self):
     assert self.size > 0
@@ -33,24 +35,23 @@ class CacheState(Generic[V]):
   def get(self, i: I) -> Optional[Tuple[I, V]]:
     return next(((j, v) for (j, v) in self.C if j == i), None)
 
-  def stepTime(self, t1: T) -> "CacheState[V]":
+  def stepTime(self, t1: T) -> "CacheNode[V]":
     """
     Move time forward without changing contents.
     """
-
     assert t1 == self.t + 1
-    return CacheState(t=t1, C=self.C, size=self.size, policy = self.policy, polName = self.polName)
+    return CacheNode(t=t1, C=self.C, size=self.size, policy=self.policy, polName=self.polName, root=self.root, leaf=self.leaf)
 
-  def replace(self, rmv: Optional[Tuple[I, V]], add: Optional[Tuple[I, V]]) -> "CacheState[V]":
+  def replace(self, rmv: Optional[Tuple[I, V]], add: Optional[Tuple[I, V]]) -> "CacheNode[V]":
     """
     Pure set-update operator, with time increment baked in.
 
     Pre-state:  C_t = (t, C, k)
     Post-state: C_{t+1} = (t+1, C', k)
 
-    where:self.t + 1
+    where:
       if rmv is None: C1 = C
-      else:           C1 = C \ {rmv}
+      else:           C1 = C - {rmv}
 
       if add is None: C' = C1
       else:           C' = C1 ∪ {add}
@@ -62,4 +63,4 @@ class CacheState(Generic[V]):
     C1 = self.C if rmv is None else (self.C - {rmv})
     C2 = C1 if add is None else (C1 | {add})
 
-    return CacheState(t=t1, C=C2, size=self.size, policy = self.policy, polName = self.polName)
+    return CacheNode(t=t1, C=C2, size=self.size, policy=self.policy, polName=self.polName, root=self.root, leaf=self.leaf)

@@ -1,4 +1,4 @@
-from cache import CacheState
+from cache import CacheNode
 from dataclasses import dataclass
 from typing import FrozenSet, Tuple, Optional, TypeVar, Generic
 import random as rand
@@ -9,7 +9,7 @@ graph of a network:
   root: Cache1
   cach1: [children_caches],
   cache2: [children],
-  
+
 }
 
 eg, a line of 3 caches:
@@ -24,7 +24,7 @@ eg, a line of 3 caches:
 μ
 """
 
-CS = CacheState
+CS = CacheNode
 I = int
 T = int
 ttl = 5
@@ -32,17 +32,15 @@ ttl = 5
 @dataclass(frozen=True)
 class CacheNetwork:
   N: dict[str, list[str]]
-  S: dict[str, CacheState]
+  S: dict[str, CacheNode]
   t: int
 
   def step(self, i: I):
     assert all(C.t == self.t for C in self.S.values())
 
-    hit, newS = self.nodeReq(0, i, self.S)
-    for k in range(len(newS)):
-      cache = newS[k]
-      if cache.t != self.t + 1:
-        newS[k] = cache.stepTime(self.t + 1)
+    hit, newS = self.nodeReq(self.N["root"], i, self.S)
+    newS = {k: (cache.stepTime(self.t + 1) if cache.t != self.t + 1 else cache)
+            for k, cache in newS.items()}
 
     return CacheNetwork(
       N=self.N,
@@ -51,7 +49,7 @@ class CacheNetwork:
     ), hit
 
 
-  def nodeReq(self, node: str, i: I, S):
+  def nodeReq(self, node, i: I, S):
     C_t = S[node]
 
     # local check
@@ -65,11 +63,11 @@ class CacheNetwork:
     children = self.N[node]
     child = None
     if len(children) > 1:
-      child = rand.randint(0, len(children))
+      child = children[rand.randint(0, len(children) - 1)]
     elif len(children) == 1:
       child = children[0]
-    
-    if child != None:
+
+    if child is not None:
       hit, newS = self.nodeReq(child, i, S)
       if hit:
         # propagate upstream
@@ -83,16 +81,14 @@ class CacheNetwork:
     hit2, C_t1 = C_t.policy(C_t, i, self.t + 1)
     newS = {**S, node: C_t1}
     return False, newS
-  
+
   def snapshot(self) -> str:
     """
     Returns a deterministic string describing node cache contents.
     """
-    # Print nodes in sorted order (exclude "root" because it's a pointer)
     nodes = sorted([k for k in self.S.keys()])
     parts = []
     for u in nodes:
       C_u = self.S[u]
       parts.append(f"C{u}:{sorted(C_u.C)}")
     return " | ".join(parts)
-  
