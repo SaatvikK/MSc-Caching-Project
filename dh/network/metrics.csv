@@ -1,0 +1,16 @@
+metric,value
+N,20
+n,4
+R,1
+Z_A,5
+Z_B,10
+k,3
+tmax,45
+policy,LRU
+hits,8
+misses,4
+delayed_hits,8
+total_requests,20
+hit_rate,0.4000
+miss_rate,0.2000
+dh_rate,0.4000

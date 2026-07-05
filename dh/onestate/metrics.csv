@@ -1,0 +1,15 @@
+metric,value
+N,20
+n,5
+R,1
+F,5
+Z,5.0
+k,3
+tmax,50
+hits,11
+misses,9
+delayed_hits,0
+total_requests,20
+hit_rate,0.55
+miss_rate,0.45
+dh_rate,0.0
