@@ -88,36 +88,19 @@ print("=" * 60)
 trace = []
 
 Qreq = []      # forward path: [req, current_v, origin_leaf, t_arrived]
-QReturn = []   # backing store returns: [req, origin_leaf, t_sent_to_bs]
 
 while clk.t.time < tmax.time:
   clk.step()
   print(f"\n--- t = {clk.t.time} ---")
 
-  # 1. Check for backing store returns
-  for ret in list(QReturn):
-    req, origin_leaf, t_sent = ret
-    QReturn.remove(ret)
-    print(f"  FETCH RETURN: item {req.i.item} (sent to BS at t={t_sent})")
-    trace.append([clk.t.time, "FETCH_RETURN", req.i.item, f"sent_at={t_sent}"])
-
-    # Return path: admit content, demote victims, resolve DHs
-    #net.returnPath(req.i, origin_leaf, policyName)
-
-    if net.dhCount > dHits:
-      resolved = net.dhCount - dHits
-      print(f"  RESOLVED: {resolved} delayed hit(s) for item {req.i.item}")
-      trace.append([clk.t.time, "DH_RESOLVE", req.i.item, f"count={resolved}"])
-      dHits = net.dhCount
-
-  # 2. Input new request from sequence
+  # 1. Input new request from sequence
   req = seq.sendReq()
   if req is not None:
     Qreq.append([req, leaf, leaf, clk.t.time])
     print(f"  NEW REQUEST: item {req.i.item}")
     trace.append([clk.t.time, "NEW_REQ", req.i.item, f"leaf={leaf}"])
 
-  # 3. Advance in-flight requests through the network
+  # 2. Advance in-flight requests through the network
   to_remove = []
   for i in range(len(Qreq)):
     reqT = Qreq[i]
@@ -143,8 +126,20 @@ while clk.t.time < tmax.time:
       misses += 1
       print(f"  MISS (all caches): item {reqT[0].i.item} -> backing store")
       trace.append([clk.t.time, "MISS_TO_BS", reqT[0].i.item, ""])
-      QReturn.append([reqT[0], reqT[2], clk.t.time])
-      net.lce(reqT[0].i, reqT[2], policyName)
+
+      # Fetch resolves now: Z_B ticks have already elapsed via the
+      # per-hop Z_A stepping above, so admission/DH-resolution happen
+      # on this same tick rather than via an extra artificial delay.
+      net.cpp(reqT[0].i, reqT[2], policyName)
+      print(f"  FETCH RETURN: item {reqT[0].i.item} (resolved at t={clk.t.time})")
+      trace.append([clk.t.time, "FETCH_RETURN", reqT[0].i.item, f"resolved_at={clk.t.time}"])
+
+      if net.dhCount > dHits:
+        resolved = net.dhCount - dHits
+        print(f"  RESOLVED: {resolved} delayed hit(s) for item {reqT[0].i.item}")
+        trace.append([clk.t.time, "DH_RESOLVE", reqT[0].i.item, f"count={resolved}"])
+        dHits = net.dhCount
+
       to_remove.append(i)
 
     elif stat == 0:  # miss at current node, advance to next hop
@@ -156,18 +151,16 @@ while clk.t.time < tmax.time:
   for i in reversed(to_remove):
     Qreq.pop(i)
 
-  # 4. Print state
+  # 3. Print state
   for v in V:
     cache = net.M[v]
     items = [f"{i.item}" for (i, _) in cache.C]
     print(f"  Cache[{v}]: {{{', '.join(items) if items else 'empty'}}}")
   inflight_fwd = [f"{r[0].i.item}@{r[1]}" for r in Qreq]
-  inflight_ret = [f"{r[0].i.item}" for r in QReturn]
   print(f"  Qreq(fwd): [{', '.join(inflight_fwd)}]")
-  print(f"  QReturn(bs): [{', '.join(inflight_ret)}]")
 
   # Early termination
-  if req is None and not Qreq and not QReturn:
+  if req is None and not Qreq:
     print("\n  (no more activity — terminating early)")
     break
 

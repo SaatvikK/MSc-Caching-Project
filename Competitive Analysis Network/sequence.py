@@ -46,7 +46,9 @@ class Sequence:
     t = self.t if t == None else t
     assert t.time <= self.tmax.time
     r1 = Request(i=I(item = i), t=t, tmax=self.tmax)
-    return Sequence(S=self.S + (r1,), tmax=self.tmax, t=self.t)
+    new_seq = Sequence(S=self.S + (r1,), tmax=self.tmax, t=self.t)
+    new_seq.nextReq = self.nextReq
+    return new_seq
 
   def sendReq(self):
     if self.nextReq >= len(self.S):

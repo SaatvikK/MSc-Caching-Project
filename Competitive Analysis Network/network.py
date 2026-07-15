@@ -38,6 +38,10 @@ class CacheNetwork:
     
     clk = Clock(t = self.t, tmax = self.tmax)
 
+  def getItems(self): # get all items stored in the network
+    return {i for cache in self.M.values() for (i, _) in cache.C}
+
+
   def computeZ(self, src, dst = "b"):
     numCaches = len(self.pathTo(src, dst)) - 1
     return numCaches * self.Z_A # Z_C
@@ -176,8 +180,21 @@ class CacheNetwork:
   #     vUp = self.nextHop(leaf)
   #     if vUp is not None and vUp != "b":
   #       self.demote(victim[0], vUp, policyName)
-      
-  
+
+
+
+##################################
+  def cpp(self, item: I, leaf, policyName: str = "TTL", cpp: str = "lce"):
+    match(cpp):
+      case "opt": self.opt(item, leaf, policyName)
+      case "lce": self.lce(item, leaf, policyName)
+    
+# CPPs
+  def opt(self, item: I, leaf, policyName: str = "TTL"):
+    # OPT does not need to re-arrange for the advesarial sequence.
+    pass
+
+
   def lce(self, item: I, leaf, policyName: str = "TTL"):
     path = [n for n in self.pathTo(leaf, "b") if n != "b"]
 
