@@ -62,7 +62,7 @@ policyName = "TTL"
 B = BStore(I, t, Z_B)
 
 net = CN(
-  (V, E), {}, T(time=0), T(time=MAX_TIME),
+  (V, E), {}, T(time=MAX_TIME),
   clk=clk, Z_A=Z_A, B=B, dhCount=0,
   QFetch={}, QResolve={}, ttl=TTL
 )

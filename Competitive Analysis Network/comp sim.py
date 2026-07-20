@@ -1,272 +1,234 @@
-# sim.py
+# comp sim.py
+#
+# Iterates over (k, |V|, Z_A) and, for each configuration, builds the
+# adversarial sequence from report Section 5.4, runs it against LCE
+# (dynamically, since the burst schedule depends on live LCE eviction
+# behaviour), then replays the exact same finalised sequence against OPT
+# (a pre-seeded network that never needs to rearrange), and records the
+# empirical competitive ratio CR = L(LCE, rho_A) / L(OPT, rho_A).
+
 from dataclasses import dataclass
 from typing import Tuple, FrozenSet, TypeVar
 from clock import V, I, T, Clock
 from sequence import Sequence as Seq
 from sequence import Request as Req
 from backingstore import BackingStore as BStore
-from cache import CacheState 
+from cache import CacheState
 from policies import *
 from network import CacheNetwork as CN
 import csv
 
-
-########## DEFINE SIM PARAMETERS ##########
-MAX_TIME = 100000 # t_max >= N + 2Z_B + 2
-NUM_REQUESTS = 20 # N
-NUM_ITEMS = 6 # n
-R = 1 # R
-k = 2 # k
-V = [0, 1] # vertices
-E = [(0, 1)] # edges
 leaf = 0
 policyName = "TTL"
-Z_A = 2 # delay parameter per hop
-Z_B = len(V)*Z_A # delay parameter from root to backing store
-k_T = len(V)*k
-TTL = 6 # TTL granted to an item on admission/renewal
-W = 3 # the first 3 items of I
-###########################################
-t = T(time = 0)
-tmax = T(time = MAX_TIME)
 
-clk = Clock(t, tmax)
 
-def createSequence():
-  """
-  N : total number of requests
-  n : number of distinct items (universe size)
-  R : constant inter-request arrival time (in timesteps)
-  """
+def constructNet(Vn, Z_A, k, ttl, tmax_val):
+  """Vn = |V| = number of caches (each capacity k), in a line ending at
+  the backing store. Builds a brand-new T/Clock/CacheNetwork on every
+  call — nothing is shared across calls, so independent sweep points
+  (and the paired LCE/OPT runs within one sweep point) never leak clock
+  or cache state into each other."""
+  t = T(time=0)
+  tmax = T(time=tmax_val)
+  clk = Clock(t, tmax)
 
-  seq = Seq((), tmax = tmax, t = t)
-  stop = False
-  # First Z_B-1 pure requests
-  # network is initialised with the first k_T items.
-  # So we request any item > k_T
-  item = k_T + 1
-  tt = 0
-  while not stop:
-    rt = T(time = 1 + tt)
-    seq = seq.add(item, rt)
-    if tt == Z_B - 1: stop = True; break
-    tt += 1
+  vertices = list(range(Vn))
+  edges = [(i, i + 1) for i in range(Vn - 1)]
+  B = BStore(I, t, Vn * Z_A)
 
-  # Then one pure request for an item in the |V|-1th cache.
-  # By this point no items have been admitted.
-  # So the cache is still in its initial state in terms of which items
-  # are stored. Meaning, we just request the k_Tth item.
-  rt = T(time = 1 + tt + 1)
-  seq = seq.add(k_T, rt)
+  net = CN(
+    (vertices, edges), {}, tmax,
+    clk=clk, Z_A=Z_A, B=B, dhCount=0,
+    QFetch={}, QResolve={}, ttl=ttl
+  )
+  net.buildMap(t, k)
+  net.prefill(Vn * k)
+  return net
 
-  # Then, we make |W|-1 bursty requests, each being for whichever
-  # Item is in the network but not in W.
-  # However, this cannot be pre-generated easily, so it will be
-  # co-generated during simulation.
 
+def createSequenceSkeleton(k_T, Z_B, tmax, t):
+  """The fixed prefix of rho_A (report Sec 5.4, generalised):
+    1. Z_B - 1 pure requests, at t=1..Z_B-1, for item k_T+1 (not resident).
+    2. One pure request, at t=Z_B, for item k_T (resident, in the last cache).
+  The bursty phase is appended dynamically during simulation, since which
+  item each burst targets depends on live eviction state."""
+  seq = Seq((), tmax=tmax, t=t)
+  freshItem = k_T + 1
+  for tt in range(1, Z_B):
+    seq = seq.add(freshItem, T(time=tt))
+  seq = seq.add(k_T, T(time=Z_B))
   return seq
 
-def burstyRequestBuilder(item: I, seq: Seq, ct: T):
-  # Nones:
-  for i in range(Z_B):
-    ct = T(time=ct.time + 1)
-  
-  # Item:
-  for i in range(Z_B):
-    ct = T(time=ct.time + 1)
-    seq = seq.add(item, ct)
-  
-  # Nones:
-  for i in range(Z_B):
-    ct = T(time=ct.time + 1)
-  
-  return seq, ct
 
-seq = createSequence()
-
-print("SEQUENCE:")
-for idx, req in enumerate(seq.S):
-  print(f"  r_{idx+1}: item {req.i.item} at t={req.t.time}")
-print()
-
-#### COUNTERS
-dHits = 0
-hits = 0
-misses = 0
-
-V = [0, 1]
-E = [(0, 1)]
-leaf = 0
-policyName = "TTL"
-
-B = BStore(I, t, Z_B)
-
-net = CN(
-  (V, E), {}, T(time=0), T(time=MAX_TIME),
-  clk=clk, Z_A=Z_A, B=B, dhCount=0,
-  QFetch={}, QResolve={}, ttl=TTL
-)
-net.buildMap(t, k)
-
-# Total Z from leaf to backing store
-Z_B = net.computeZ(leaf)
-print("NETWORK:")
-print(f"  Topology: {V}")
-print(f"  Edges: {E}")
-print(f"  Path from leaf {leaf} to backing store: {net.pathTo(leaf)}")
-print(f"  Z_A={Z_A}, Z_B={Z_B}")
-print()
-
-print("=" * 60)
-print(f"  SIMULATION CONFIG")
-print(f"  N={NUM_REQUESTS}, |I|={NUM_ITEMS}, R={R}")
-print(f"  Z_A={Z_A}, Z_B={Z_B}, k={k}")
-print(f"  tmax={tmax.time}")
-print(f"  policy={policyName}")
-print("=" * 60)
-
-trace = []
-
-Qreq = []      # forward path: [req, current_v, origin_leaf, t_arrived]
-
-# --- Adversarial burst scheduling state ---
-Witems = list(range(W))       # candidate item pool: {0, ..., W-1}
-usedItems = set()             # members of W already bursted — never repeat one
-burstsDone = 0
-maxBursts = W                 # step 3 + |W|-1 repeats = |W| total bursts
-burstCursor = T(time=seq.S[-1].t.time)  # next free tick, right after createSequence()'s last request
-
-while clk.t.time < tmax.time:
-  # Decide the next bursty phase now, before the clock advances, so it's
-  # based on the network state as of the end of the previous tick's
-  # rearrangement (i.e. after any LCE admission that just happened).
-  if burstsDone < maxBursts and clk.t.time >= burstCursor.time:
-    present = {i.item for v in V for (i, _) in net.M[v].C}
-    candidates = [w for w in Witems if w not in present and w not in usedItems]
-    assert candidates, f"no unused item in W={Witems} absent from network at t={clk.t.time}; adversarial construction assumption violated"
-    item = candidates[0]
-    usedItems.add(item)
-    seq, burstCursor = burstyRequestBuilder(item, seq, burstCursor)
-    burstsDone += 1
-    print(f"  [burst {burstsDone}/{maxBursts}] scheduled item {item}, next cursor t={burstCursor.time}")
-
-  clk.step()
-  print(f"\n--- t = {clk.t.time} ---")
-
-  # 1. Input new request from sequence
-  req = seq.sendReq()
-  if req is not None:
-    Qreq.append([req, leaf, leaf, clk.t.time])
-    print(f"  NEW REQUEST: item {req.i.item}")
-    trace.append([clk.t.time, "NEW_REQ", req.i.item, f"leaf={leaf}"])
-
-  # 2. Advance in-flight requests through the network
-  to_remove = []
-  for i in range(len(Qreq)):
-    reqT = Qreq[i]
-    # Check if Z_A time has elapsed since arriving at current node
-    if reqT[1] != reqT[2] and clk.t.time - reqT[3] < Z_A:
-      continue
-
-    _, stat, vNext = net.forward(reqT[0], reqT[1])
-
-    if stat == 2:  # hit at current node
-      hits += 1
-      print(f"  HIT: item {reqT[0].i.item} at node {reqT[1]}")
-      trace.append([clk.t.time, "HIT", reqT[0].i.item, f"node={reqT[1]}"])
-      #net.returnPath(reqT[0].i, reqT[2], policyName)
-      to_remove.append(i)
-
-    elif stat == 1:  # delayed hit — fetch already in flight at this node
-      print(f"  DELAYED HIT: item {reqT[0].i.item} at node {reqT[1]}")
-      trace.append([clk.t.time, "DELAYED_HIT", reqT[0].i.item, f"node={reqT[1]}"])
-      to_remove.append(i)
-
-    elif stat == "b":  # reached backing store
-      misses += 1
-      print(f"  MISS (all caches): item {reqT[0].i.item} -> backing store")
-      trace.append([clk.t.time, "MISS_TO_BS", reqT[0].i.item, ""])
-
-      # Fetch resolves now: Z_B ticks have already elapsed via the
-      # per-hop Z_A stepping above, so admission/DH-resolution happen
-      # on this same tick rather than via an extra artificial delay.
-      net.cpp(reqT[0].i, reqT[2], policyName)
-      print(f"  FETCH RETURN: item {reqT[0].i.item} (resolved at t={clk.t.time})")
-      trace.append([clk.t.time, "FETCH_RETURN", reqT[0].i.item, f"resolved_at={clk.t.time}"])
-
-      if net.dhCount > dHits:
-        resolved = net.dhCount - dHits
-        print(f"  RESOLVED: {resolved} delayed hit(s) for item {reqT[0].i.item}")
-        trace.append([clk.t.time, "DH_RESOLVE", reqT[0].i.item, f"count={resolved}"])
-        dHits = net.dhCount
-
-      to_remove.append(i)
-
-    elif stat == 0:  # miss at current node, advance to next hop
-      print(f"  MISS: item {reqT[0].i.item} at node {reqT[1]} -> forwarding to {vNext}")
-      trace.append([clk.t.time, "MISS", reqT[0].i.item, f"node={reqT[1]},next={vNext}"])
-      Qreq[i][1] = vNext
-      Qreq[i][3] = clk.t.time
-
-  for i in reversed(to_remove):
-    Qreq.pop(i)
-
-  # 3. Print state
-  for v in V:
-    cache = net.M[v]
-    items = [f"{i.item}" for (i, _) in cache.C]
-    print(f"  Cache[{v}]: {{{', '.join(items) if items else 'empty'}}}")
-  inflight_fwd = [f"{r[0].i.item}@{r[1]}" for r in Qreq]
-  print(f"  Qreq(fwd): [{', '.join(inflight_fwd)}]")
-
-  # Early termination — only once nothing is in flight, nothing already
-  # queued in seq remains undelivered, and no future burst will add more.
-  if req is None and not Qreq and seq.nextReq >= len(seq.S) and burstsDone >= maxBursts:
-    print("\n  (no more activity — terminating early)")
-    break
-
-dHits = net.dhCount
-
-print("\n" + "=" * 60)
-print(f"  RESULTS")
-print(f"  Hits:         {hits}")
-print(f"  Misses:       {misses}")
-print(f"  Delayed Hits: {dHits}")
-print(f"  Total:        {hits + misses + dHits}")
-if (hits + misses + dHits) > 0:
-  total = hits + misses + dHits
-  print(f"  Hit Rate:     {hits/total:.2%}")
-  print(f"  Miss Rate:    {misses/total:.2%}")
-  print(f"  DH Rate:      {dHits/total:.2%}")
-print("=" * 60)
+def appendBurst(seq, item, startTime, Z_B):
+  """Append Z_B consecutive per-tick requests for `item`, starting at
+  startTime, with no gap before or after (the next burst, if any, starts
+  immediately at startTime + Z_B)."""
+  for j in range(Z_B):
+    seq = seq.add(item, T(time=startTime + j))
+  return seq, startTime + Z_B
 
 
-############## SAVE TO CSV
-with open("trace.csv", "w", newline="") as f:
-  writer = csv.writer(f)
-  writer.writerow(["tick", "event", "item", "detail"])
-  for row in trace:
-    writer.writerow(row)
+def simulateAdversarial(net, seq, W_items, Z_B, leaf=0, policyName="TTL"):
+  """Drives `net` (under LCE) through the fixed-prefix sequence, then
+  dynamically appends len(W_items) bursts as the clock reaches each
+  burst's start tick, each targeting whichever W-item is currently both
+  absent from the network and not yet used. Returns (latencies, seq) —
+  seq is now fully concrete and can be replayed verbatim against another
+  (e.g. OPT) network."""
+  latencies = []
+  Qreq = []  # [req, current_v, origin_leaf, t_arrived, latency]
+  clk = net.clk
 
-with open("metrics.csv", "w", newline="") as f:
-  writer = csv.writer(f)
-  writer.writerow(["metric", "value"])
-  writer.writerow(["N", NUM_REQUESTS])
-  writer.writerow(["n", NUM_ITEMS])
-  writer.writerow(["R", R])
-  writer.writerow(["Z_A", Z_A])
-  writer.writerow(["Z_B", Z_B])
-  writer.writerow(["k", k])
-  writer.writerow(["tmax", tmax.time])
-  writer.writerow(["policy", policyName])
-  writer.writerow(["hits", hits])
-  writer.writerow(["misses", misses])
-  writer.writerow(["delayed_hits", dHits])
-  writer.writerow(["total_requests", hits + misses + dHits])
-  if (hits + misses + dHits) > 0:
-    total = hits + misses + dHits
-    writer.writerow(["hit_rate", f"{hits/total:.4f}"])
-    writer.writerow(["miss_rate", f"{misses/total:.4f}"])
-    writer.writerow(["dh_rate", f"{dHits/total:.4f}"])
+  usedItems = set()
+  burstsDone = 0
+  maxBursts = len(W_items)
+  burstCursor = Z_B + 1  # first burst starts right after the initial fetch resolves
 
-print("\nCSV files written: trace.csv, metrics.csv")
+  while clk.t.time < clk.tmax.time:
+    clk.step()
+
+    # Scheduling must happen AFTER clk.step() (i.e. using the tick that
+    # sendReq() is about to check against), not before.
+    if burstsDone < maxBursts and clk.t.time >= burstCursor:
+      present = net.getItems()
+      candidates = [w for w in W_items if w not in present and w not in usedItems]
+      assert candidates, (
+        f"no unused item in W={W_items} absent from network at "
+        f"t={clk.t.time}; adversarial construction assumption violated"
+      )
+      item = candidates[0]
+      usedItems.add(item)
+      seq, burstCursor = appendBurst(seq, item, burstCursor, Z_B)
+      burstsDone += 1
+
+    req = seq.sendReq()
+    if req is not None:
+      Qreq.append([req, leaf, leaf, clk.t.time, 0])
+
+    to_remove = []
+    for i in range(len(Qreq)):
+      reqT = Qreq[i]
+      if reqT[1] != reqT[2] and clk.t.time - reqT[3] < net.Z_A:
+        continue
+
+      _, stat, vNext = net.forward(reqT[0], reqT[1])
+
+      if stat == 2:  # hit
+        latencies.append(reqT[4])
+        to_remove.append(i)
+      elif stat == 1:  # delayed hit — its latency is recorded later, via
+        to_remove.append(i)  # net.dhLatencies, once the underlying fetch resolves
+      elif stat == "b":  # reached backing store — fetch resolves now
+        net.cpp(reqT[0].i, reqT[2], policyName, cpp="lce")
+        latencies.append(reqT[4])
+        to_remove.append(i)
+      elif stat == 0:  # miss, advance to next hop
+        Qreq[i][1] = vNext
+        Qreq[i][3] = clk.t.time
+        Qreq[i][4] += net.Z_A
+
+    for i in reversed(to_remove):
+      Qreq.pop(i)
+
+    if (req is None and not Qreq and seq.nextReq >= len(seq.S)
+        and burstsDone >= maxBursts):
+      break
+
+  return latencies + net.dhLatencies, seq
+
+
+def simulate(net, seq, cpp, leaf=0, policyName="TTL"):
+  """Pure replay of an ALREADY-FINALISED sequence (no live decisions)
+  through `net` using the given cpp ('lce' or 'opt'). Caller must reset
+  seq.nextReq = 0 before calling this a second time on the same Sequence
+  object."""
+  latencies = []
+  Qreq = []
+  clk = net.clk
+
+  while clk.t.time < clk.tmax.time:
+    clk.step()
+
+    req = seq.sendReq()
+    if req is not None:
+      Qreq.append([req, leaf, leaf, clk.t.time, 0])
+
+    to_remove = []
+    for i in range(len(Qreq)):
+      reqT = Qreq[i]
+      if reqT[1] != reqT[2] and clk.t.time - reqT[3] < net.Z_A:
+        continue
+
+      _, stat, vNext = net.forward(reqT[0], reqT[1])
+
+      if stat == 2:
+        latencies.append(reqT[4])
+        to_remove.append(i)
+      elif stat == 1:
+        to_remove.append(i)
+      elif stat == "b":
+        net.cpp(reqT[0].i, reqT[2], policyName, cpp=cpp)
+        latencies.append(reqT[4])
+        to_remove.append(i)
+      elif stat == 0:
+        Qreq[i][1] = vNext
+        Qreq[i][3] = clk.t.time
+        Qreq[i][4] += net.Z_A
+
+    for i in reversed(to_remove):
+      Qreq.pop(i)
+
+    if req is None and not Qreq and seq.nextReq >= len(seq.S):
+      break
+
+  return latencies + net.dhLatencies
+
+
+def runConfig(k, Vn, Z_A, ttl, tmax_val):
+  """Runs one (k, Vn, Z_A) sweep point end to end: builds the adversarial
+  sequence against a fresh LCE network, then replays the finalised
+  sequence against a fresh, independently-prefilled OPT network. Returns
+  (L_LCE, L_OPT, Z_B, k_T)."""
+  k_T = Vn * k
+  Z_B = Vn * Z_A
+  W_items = list(range(1, k + 2))  # |W| = k+1 items, subset of the initially resident set
+
+  net_lce = constructNet(Vn, Z_A, k, ttl, tmax_val)
+  seq0 = createSequenceSkeleton(k_T, Z_B, net_lce.clk.tmax, net_lce.clk.t)
+  latsLCE, seqFinal = simulateAdversarial(net_lce, seq0, W_items, Z_B, leaf, policyName)
+
+  net_opt = constructNet(Vn, Z_A, k, ttl, tmax_val)
+  seqFinal.nextReq = 0
+  # Sequence.sendReq() compares the current tick against seqFinal.t, which
+  # is still aliased to net_lce's (now-finished) clock — rebind it to
+  # net_opt's fresh clock before replaying, or every sendReq() check will
+  # compare against a frozen, stale time and never match.
+  seqFinal.t = net_opt.clk.t
+  latsOPT = simulate(net_opt, seqFinal, cpp="opt", leaf=leaf, policyName=policyName)
+
+  return sum(latsLCE), sum(latsOPT), Z_B, k_T
+
+
+if __name__ == "__main__":
+  TTL_VAL = 6
+  TMAX_VAL = 10_000
+
+  krange, Vrange, Z_Arange = (1, 4), (2, 5), (1, 4)
+
+  rows = []
+  for k in range(*krange):
+    for Vn in range(*Vrange):
+      for Z_A in range(*Z_Arange):
+        L_LCE, L_OPT, Z_B, k_T = runConfig(k, Vn, Z_A, TTL_VAL, TMAX_VAL)
+        CR = L_LCE / L_OPT if L_OPT else float("nan")
+        rows.append([k, Vn, Z_A, Z_B, k_T, TTL_VAL, L_LCE, L_OPT, CR])
+        print(f"k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
+              f"L_LCE={L_LCE}  L_OPT={L_OPT}  CR={CR:.4f}")
+
+  with open("cr_sweep.csv", "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["k", "Vn", "Z_A", "Z_B", "k_T", "ttl", "L_LCE", "L_OPT", "CR"])
+    writer.writerows(rows)
+
+  print("\nCSV written: cr_sweep.csv")

@@ -4,12 +4,9 @@ from cache import CacheState
 
 
 def TTL(cache: CacheState):
-  # Entries store (item, expiry_time). An item with expiry_time <= now has
-  # TTL 0 but is NOT proactively removed — it just becomes the top eviction
-  # candidate the next time a slot is needed.
   if len(cache.C) < cache.size:
     return None
-  return min(cache.C, key=lambda entry: entry[1])
+  return min(cache.C, key=lambda entry: (entry[1], entry[0].item))
 
 
 def policy(name: str, cache: CacheState):
