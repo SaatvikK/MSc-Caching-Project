@@ -17,6 +17,8 @@ from cache import CacheState
 from policies import *
 from network import CacheNetwork as CN
 import csv
+import time
+import numpy as np
 
 leaf = 0
 policyName = "TTL"
@@ -54,9 +56,10 @@ def createSequenceSkeleton(k_T, Z_B, tmax, t):
   item each burst targets depends on live eviction state."""
   seq = Seq((), tmax=tmax, t=t)
   freshItem = k_T + 1
-  for tt in range(1, Z_B):
-    seq = seq.add(freshItem, T(time=tt))
-  seq = seq.add(k_T, T(time=Z_B))
+  seq = seq.add(freshItem, T(time=1))
+  # for tt in range(1, Z_B):
+  #   seq = seq.add(freshItem, T(time=tt))
+  # seq = seq.add(k_T, T(time=Z_B))
   return seq
 
 
@@ -114,9 +117,19 @@ def simulateAdversarial(net, seq, W_items, Z_B, leaf=0, policyName="TTL"):
 
       _, stat, vNext = net.forward(reqT[0], reqT[1])
 
-      if stat == 2:  # hit
+      if stat == 2: # hit
         latencies.append(reqT[4])
         to_remove.append(i)
+
+
+        path = [n for n in net.pathTo(reqT[2], "b") if n != "b"]
+        item = reqT[0].i
+        for node in path:
+          if item in net.QFetch[node]:
+            net.QFetch[node].remove(item)
+            _, dhs = net.resolve(item, node)
+            net.dhCount += dhs
+            
       elif stat == 1:  # delayed hit — its latency is recorded later, via
         to_remove.append(i)  # net.dhLatencies, once the underlying fetch resolves
       elif stat == "b":  # reached backing store — fetch resolves now
@@ -162,16 +175,26 @@ def simulate(net, seq, cpp, leaf=0, policyName="TTL"):
 
       _, stat, vNext = net.forward(reqT[0], reqT[1])
 
-      if stat == 2:
+      if stat == 2: #hit
         latencies.append(reqT[4])
         to_remove.append(i)
-      elif stat == 1:
+
+
+        path = [n for n in net.pathTo(reqT[2], "b") if n != "b"]
+        item = reqT[0].i
+        for node in path:
+          if item in net.QFetch[node]:
+            net.QFetch[node].remove(item)
+            _, dhs = net.resolve(item, node)
+            net.dhCount += dhs
+            
+      elif stat == 1: # DH
         to_remove.append(i)
       elif stat == "b":
         net.cpp(reqT[0].i, reqT[2], policyName, cpp=cpp)
         latencies.append(reqT[4])
         to_remove.append(i)
-      elif stat == 0:
+      elif stat == 0: # node miss
         Qreq[i][1] = vNext
         Qreq[i][3] = clk.t.time
         Qreq[i][4] += net.Z_A
@@ -212,23 +235,36 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val):
 
 if __name__ == "__main__":
   TTL_VAL = 6
-  TMAX_VAL = 10_000
+  TMAX_VAL = np.inf
 
-  krange, Vrange, Z_Arange = (1, 4), (2, 5), (1, 4)
+  # Geometric sweeps: log-spaced points span orders of magnitude with far
+  # fewer configs than a linear range, which is what the asymptotic growth
+  # in k and |V| needs. Widen by bumping the arange bounds; cost per config
+  # grows like Vn*Z_A*(k+3), so the top corner dominates the total runtime.
+  krange = 2 ** np.arange(16)          # 1,2,4,8,16,32
+  Vrange = 2 ** np.arange(1, 16)       # 2,4,8,16,32
+  Z_Arange = 2 ** np.arange(3)        # 1,2,4,8,16
 
   rows = []
-  for k in range(*krange):
-    for Vn in range(*Vrange):
-      for Z_A in range(*Z_Arange):
-        L_LCE, L_OPT, Z_B, k_T = runConfig(k, Vn, Z_A, TTL_VAL, TMAX_VAL)
+  epochs = len(krange) * len(Vrange) * len(Z_Arange)
+  currepoch = 0
+  start = time.time()
+  for k in krange:
+    for Vn in Vrange:
+      for Z_A in Z_Arange:
+        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL)
         CR = L_LCE / L_OPT if L_OPT else float("nan")
-        rows.append([k, Vn, Z_A, Z_B, k_T, TTL_VAL, L_LCE, L_OPT, CR])
-        print(f"k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
+        rows.append([k, Vn, Z_A, CR])
+        exec_ = time.time()-start
+        print(f"[{currepoch} / {epochs}]{exec_:.2f} sec: k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
               f"L_LCE={L_LCE}  L_OPT={L_OPT}  CR={CR:.4f}")
+        currepoch += 1
+  
+  print(f"SIM EXEC TIME TOTAL: {time.time() - start:.2f} seconds")
 
   with open("cr_sweep.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["k", "Vn", "Z_A", "Z_B", "k_T", "ttl", "L_LCE", "L_OPT", "CR"])
+    writer.writerow(["k", "Vn", "Z_A", "CR"])
     writer.writerows(rows)
 
   print("\nCSV written: cr_sweep.csv")

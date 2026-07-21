@@ -7,6 +7,7 @@ from sequence import Request
 from backingstore import BackingStore
 from policies import *
 import numpy as np
+import platform as plat
 
 @dataclass
 class CacheNetwork:
@@ -137,9 +138,8 @@ class CacheNetwork:
     return req, 0, self.nextHop(v)
 
   def cpp(self, item: I, leaf, policyName: str = "TTL", cpp: str = "lce"):
-    match(cpp):
-      case "opt": self.opt(item, leaf, policyName)
-      case "lce": self.lce(item, leaf, policyName)
+    if cpp == "opt": self.opt(item, leaf, policyName)
+    elif cpp == "lce": self.lce(item, leaf, policyName)
     
 # CPPs
   def opt(self, item: I, leaf, policyName: str = "TTL"):
