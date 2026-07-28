@@ -51,10 +51,8 @@ class Sequence:
     return new_seq
 
   def sendReq(self):
-    if self.nextReq >= len(self.S):
-      return None
-    req = self.S[self.nextReq]
-    if self.t.time == req.t.time:
+    out = []
+    while self.nextReq < len(self.S) and self.S[self.nextReq].t.time <= self.t.time:
+      out.append(self.S[self.nextReq])
       self.nextReq += 1
-      return req
-    return None
+    return out
