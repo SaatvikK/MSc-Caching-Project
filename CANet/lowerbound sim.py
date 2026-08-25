@@ -19,6 +19,8 @@ from network import CacheNetwork as CN
 import csv
 import time
 import numpy as np
+import sequenceBuild as sb
+
 
 leaf = 0
 policyName = "TTL"
@@ -61,16 +63,6 @@ def createSequenceSkeleton(k_T, Z_B, tmax, t):
   #   seq = seq.add(freshItem, T(time=tt))
   # seq = seq.add(k_T, T(time=Z_B))
   return seq
-
-
-def appendBurst(seq, item, startTime, Z_B):
-  """Append Z_B consecutive per-tick requests for `item`, starting at
-  startTime, with no gap before or after (the next burst, if any, starts
-  immediately at startTime + Z_B)."""
-  for j in range(Z_B):
-    seq = seq.add(item, T(time=startTime + j))
-  return seq, startTime + Z_B
-
 
 def simulateAdversarial(net, seq, W_items, Z_B, leaf=0, policyName="TTL"):
   """Drives `net` (under LCE) through the fixed-prefix sequence, then
@@ -208,7 +200,7 @@ def simulate(net, seq, cpp, leaf=0, policyName="TTL"):
   return latencies + net.dhLatencies
 
 
-def runConfig(k, Vn, Z_A, ttl, tmax_val):
+def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
   """Runs one (k, Vn, Z_A) sweep point end to end: builds the adversarial
   sequence against a fresh LCE network, then replays the finalised
   sequence against a fresh, independently-prefilled OPT network. Returns
@@ -218,8 +210,12 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val):
   W_items = list(range(1, k + 2))  # |W| = k+1 items, subset of the initially resident set
 
   net_lce = constructNet(Vn, Z_A, k, ttl, tmax_val)
-  seq0 = createSequenceSkeleton(k_T, Z_B, net_lce.clk.tmax, net_lce.clk.t)
-  latsLCE, seqFinal = simulateAdversarial(net_lce, seq0, W_items, Z_B, leaf, policyName)
+  seqFinal, latsLCE = None, None
+  if seqType == "A":
+    seq0 = createSequenceSkeleton(k_T, Z_B, net_lce.clk.tmax, net_lce.clk.t)
+    latsLCE, seqFinal = sb.simulateAdversarial(net_lce, seq0, W_items, Z_B, leaf, policyName)
+  elif seqType == "MW":
+    latsLCE, seqFinal = sb.simulateManoharWilliams(net_lce, UniSize, Z_B, k, leaf, policyName)
 
   net_opt = constructNet(Vn, Z_A, k, ttl, tmax_val)
   seqFinal.nextReq = 0
@@ -236,14 +232,16 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val):
 if __name__ == "__main__":
   TTL_VAL = 6
   TMAX_VAL = np.inf
+  UNIVERSE_SIZE = 6
+  TYPE = "MW" # A = rho_A, MW = rho_MW
 
   # Geometric sweeps: log-spaced points span orders of magnitude with far
   # fewer configs than a linear range, which is what the asymptotic growth
   # in k and |V| needs. Widen by bumping the arange bounds; cost per config
   # grows like Vn*Z_A*(k+3), so the top corner dominates the total runtime.
-  krange = 2 ** np.arange(16)          # 1,2,4,8,16,32
-  Vrange = 2 ** np.arange(1, 16)       # 2,4,8,16,32
-  Z_Arange = 2 ** np.arange(3)        # 1,2,4,8,16
+  krange = 2 ** np.arange(7)          # 1,2,4,8,16,32,64
+  Vrange = 2 ** np.arange(1, 7)       # 2,4,8,16,32,64
+  Z_Arange = 2 ** np.arange(6)        # 1,2,4,8,16,32
 
   rows = []
   epochs = len(krange) * len(Vrange) * len(Z_Arange)
@@ -252,7 +250,7 @@ if __name__ == "__main__":
   for k in krange:
     for Vn in Vrange:
       for Z_A in Z_Arange:
-        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL)
+        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL, UNIVERSE_SIZE)
         CR = L_LCE / L_OPT if L_OPT else float("nan")
         rows.append([k, Vn, Z_A, CR])
         exec_ = time.time()-start
@@ -262,9 +260,21 @@ if __name__ == "__main__":
   
   print(f"SIM EXEC TIME TOTAL: {time.time() - start:.2f} seconds")
 
-  with open("cr_sweep.csv", "w", newline="") as f:
+  with open(f"{TYPE}_lowerbound_sweep.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["k", "Vn", "Z_A", "CR"])
     writer.writerows(rows)
 
-  print("\nCSV written: cr_sweep.csv")
+  print(f"\nCSV written: {TYPE}_lowerbound_sweep.csv")
+
+
+
+"""
+FOR LAPTOP -- MY RHO:
+  krange = 2 ** np.arange(7)          # 1,2,4,8,16,32,64
+  Vrange = 2 ** np.arange(1, 7)       # 2,4,8,16,32,64
+  Z_Arange = 2 ** np.arange(6)        # 1,2,4,8,16,32
+
+FOR LAPTOP -- RHO_MW:
+
+"""
