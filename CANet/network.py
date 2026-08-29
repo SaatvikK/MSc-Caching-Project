@@ -3,11 +3,12 @@ from dataclasses import dataclass, field
 from typing import Tuple, List, Optional
 from clock import V, I, T, Clock
 from cache import CacheState
-from sequence import Request
+from sequence import Request, Sequence
 from backingstore import BackingStore
 from policies import *
 import numpy as np
 import platform as plat
+import random as rand
 
 @dataclass
 class CacheNetwork:
@@ -22,6 +23,7 @@ class CacheNetwork:
   QResolve: dict
   ttl: T
   dhLatencies: list = field(default_factory=list)  # latency of each resolved delayed hit
+  arranged: bool = False  # has OPT already spent its single rearrangement? (report Lemma 5.2)
   # Each cache node is given a label that represents the vertex (eg v_1, v_2, etc.)
   # The mapping dict, M, maps each vertex to a CacheState object.
   # Then, in G, we only use the vertex labels.
@@ -112,7 +114,6 @@ class CacheNetwork:
   # If a fetch is already in flight for this item at v, it's a delayed hit — don't propagate.
 
   def forward(self, req: Request, v):
-
     if v == "b":
       # Reached the backing store — send fetch
       self.B.recvFetch(req)
@@ -137,19 +138,30 @@ class CacheNetwork:
     self.QFetch[v].append(req.i)
     return req, 0, self.nextHop(v)
 
-  def cpp(self, item: I, leaf, policyName: str = "TTL", cpp: str = "lce"):
-    if cpp == "opt": self.opt(item, leaf, policyName)
-    elif cpp == "lce": self.lce(item, leaf, policyName)
-    
+  def cpp(self, item: I, leaf, policyName: str = "TTL", cpp: str = "lce", seq: Sequence = None):
+    """`seq` is only consulted by mwOPT, which needs the *finalised* request
+    sequence to work out which item is never requested again (see mwOPT)."""
+    if cpp == "lce": self.lce(item, leaf, policyName)
+    elif cpp == "aOPT": self.aOPT(item, leaf, policyName)
+    elif cpp == "mwOPT":
+      assert seq is not None, "mwOPT needs the finalised sequence to locate j"
+      self.mwOPT(item, seq, leaf, policyName)
+    else: raise ValueError(f"unknown CPP '{cpp}' (have: lce, aOPT, mwOPT)")
+
+
 # CPPs
-  def opt(self, item: I, leaf, policyName: str = "TTL"):
+  def aOPT(self, item: I, leaf, policyName: str = "TTL"):
     path = [n for n in self.pathTo(leaf, "b") if n != "b"]
 
     for node in path:
+      # DH accounting: clear the in-flight fetch marker for this item at
+      # this node (if any) and resolve any delayed hits registered against it.
       if item in self.QFetch[node]:
         self.QFetch[node].remove(item)
         _, dhs = self.resolve(item, node)
         self.dhCount += dhs
+
+    # rho_A's OPT does not rearrange.
 
 
   def lce(self, item: I, leaf, policyName: str = "TTL"):
@@ -167,3 +179,83 @@ class CacheNetwork:
       cache = self.M[node]
       old = TTL(cache) # TTL(cache) returns the (item, TTL) tuple
       self.M[node] = cache.replace(rmv=old, add=(item, self.clk.t.time + self.ttl))
+
+  def mwOPT(self, item: I, seq: Sequence, leaf, policyName: str = "TTL"):
+    """OPT for rho_MW (report Lemmas 5.2 and 5.3).
+
+    Manohar & Williams' OPT evicts the single unmarked item j at the return of
+    the opening pure request, and never touches the cache again. Here O is a
+    *placement* policy (report Sec 5.1): it cannot name an eviction victim,
+    because that is TTL's decision. So it cannot evict j directly — it has to
+    *induce* the eviction by repeatedly placing items into the cache holding j
+    until TTL itself picks j. Each such placement re-admits the item TTL has
+    just evicted (Sec 5.1 explicitly grants O the right to place "any item
+    evicted by any cache"), which refreshes that item's TTL and rotates it to
+    the back of the eviction order. j is the only entry never refreshed, so it
+    becomes the TTL minimum within at most k - 1 rotations, at which point O
+    admits the fetched item into the slot j vacates.
+
+    O gets exactly one such rearrangement; every later fetch is DH-accounted
+    only, per Lemma 5.2 ("never rearranges again")."""
+    path = [n for n in self.pathTo(leaf, "b") if n != "b"]
+
+    for node in path:
+      # DH accounting: clear the in-flight fetch marker for this item at
+      # this node (if any) and resolve any delayed hits registered against it.
+      if item in self.QFetch[node]:
+        self.QFetch[node].remove(item)
+        _, dhs = self.resolve(item, node)
+        self.dhCount += dhs
+
+    if self.arranged:
+      return
+    self.arranged = True
+
+    # The marked set M. seq.S[0] is the opening pure request (see
+    # sequenceBuild.simulateManoharWilliams); everything after it is bursty,
+    # and only bursty requests mark — exactly as in Manohar & Williams, where
+    # the pure request for k_T+1 does not mark it.
+    M = {r.i for r in seq.S[1:]}
+
+    # j is the unmarked item: it is never requested again, so its slot is the
+    # one O can afford to give up. If the fetched item is itself unmarked then
+    # j = item and O declines placement outright (Sec 5.1) — this is the MW
+    # case where OPT simply does not cache k_T+1.
+    if item not in M:
+      return
+
+    # Otherwise j is resident. Prefer the shallowest candidate: swapping the
+    # fetched item into a cache nearer the leaf makes its later hits cheaper
+    # (a hit at depth d costs d * Z_A, Definition 4.8), and swapping in place
+    # leaves k items at every depth, which is what Lemma 5.3's latency
+    # accounting assumes.
+    vj, j = None, None
+    for node in path:
+      unmarked = sorted((i for (i, _) in self.M[node].C if i not in M),
+                        key=lambda i: i.item)
+      if unmarked:
+        vj, j = node, unmarked[0]
+        break
+
+    assert j is not None, (
+      f"every resident item is marked at t={self.clk.t.time}; rho_MW should "
+      f"always leave at least one unmarked item in {{1,...,k_T+1}}"
+    )
+
+    # Induce the eviction of j, then take the slot it vacates.
+    cache = self.M[vj]
+    victim = TTL(cache)  # None iff this cache has a free slot, so nothing need be evicted
+    rotations = 0
+    while victim is not None and victim[0] != j and rotations < cache.size:
+      cache = cache.replace(rmv=victim, add=(victim[0], self.clk.t.time + self.ttl))
+      victim = TTL(cache)
+      rotations += 1
+
+    assert victim is None or victim[0] == j, (
+      f"TTL never surfaced j={j} at v{vj} after {rotations} rotations"
+    )
+    self.M[vj] = cache.replace(rmv=victim, add=(item, self.clk.t.time + self.ttl))
+
+
+    
+

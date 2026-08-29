@@ -93,7 +93,7 @@ def simulateAdversarial(net, seq, W_items, Z_B, leaf=0, policyName="TTL"):
   return latencies + net.dhLatencies, seq
 
 
-def simulateManoharWilliams(net, ISize, Z_B, k, tmax, leaf=0, policyName="TTL"):
+def simulateManoharWilliams(net, ISize, Z_B, k, leaf=0, policyName="TTL"):
   """Drives `net` (under LCE) through the manohar-williams sequence, then
   dynamically appends len(W_items) bursts as the clock reaches each
   burst's start tick, each targeting whichever W-item is currently both
@@ -111,8 +111,8 @@ def simulateManoharWilliams(net, ISize, Z_B, k, tmax, leaf=0, policyName="TTL"):
   N_0 = {i.item for i in net.getItems()}
   universe = { i for i in range(ISize + 1)} 
   notin = universe - N_0
-  initItem = rand.sample(notin, 1)[0]
-  seq = Seq((), tmax=tmax, t=clk.t)
+  initItem = rand.sample(sorted(notin), 1)[0]  # 3.11+ removed sampling from a set
+  seq = Seq((), tmax=clk.tmax, t=clk.t)
   seq = seq.add(initItem, T(time = Z_B))
 
   while clk.t.time < clk.tmax.time:
@@ -123,12 +123,12 @@ def simulateManoharWilliams(net, ISize, Z_B, k, tmax, leaf=0, policyName="TTL"):
     if burstsDone < k and clk.t.time >= burstCursor:
       present = {i.item for i in net.getItems()}
       notin = universe - present
-      candidate = rand.sample(notin, 1)[0]
 
-      assert candidate, (
+      assert notin, (  # not `assert candidate`: item 0 is valid but falsy
         f"no unused item in I absent from network at "
         f"t={clk.t.time}; adversarial construction assumption violated"
       )
+      candidate = rand.sample(sorted(notin), 1)[0]
 
       seq, burstCursor = appendBurst(seq, candidate, burstCursor, Z_B)
       burstsDone += 1

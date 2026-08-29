@@ -17,10 +17,11 @@ from cache import CacheState
 from policies import *
 from network import CacheNetwork as CN
 import csv
+import sys
 import time
 import numpy as np
 import sequenceBuild as sb
-
+import opts
 
 leaf = 0
 policyName = "TTL"
@@ -63,85 +64,6 @@ def createSequenceSkeleton(k_T, Z_B, tmax, t):
   #   seq = seq.add(freshItem, T(time=tt))
   # seq = seq.add(k_T, T(time=Z_B))
   return seq
-
-def simulateAdversarial(net, seq, W_items, Z_B, leaf=0, policyName="TTL"):
-  """Drives `net` (under LCE) through the fixed-prefix sequence, then
-  dynamically appends len(W_items) bursts as the clock reaches each
-  burst's start tick, each targeting whichever W-item is currently both
-  absent from the network and not yet used. Returns (latencies, seq) —
-  seq is now fully concrete and can be replayed verbatim against another
-  (e.g. OPT) network."""
-  latencies = []
-  Qreq = []  # [req, current_v, origin_leaf, t_arrived, latency]
-  clk = net.clk
-
-  usedItems = set()
-  burstsDone = 0
-  maxBursts = len(W_items)
-  burstCursor = Z_B + 1  # first burst starts right after the initial fetch resolves
-
-  while clk.t.time < clk.tmax.time:
-    clk.step()
-
-    # Scheduling must happen AFTER clk.step() (i.e. using the tick that
-    # sendReq() is about to check against), not before.
-    if burstsDone < maxBursts and clk.t.time >= burstCursor:
-      present = net.getItems()
-      candidates = [w for w in W_items if w not in present and w not in usedItems]
-      assert candidates, (
-        f"no unused item in W={W_items} absent from network at "
-        f"t={clk.t.time}; adversarial construction assumption violated"
-      )
-      item = candidates[0]
-      usedItems.add(item)
-      seq, burstCursor = appendBurst(seq, item, burstCursor, Z_B)
-      burstsDone += 1
-
-    req = seq.sendReq()
-    if req is not None:
-      Qreq.append([req, leaf, leaf, clk.t.time, 0])
-
-    to_remove = []
-    for i in range(len(Qreq)):
-      reqT = Qreq[i]
-      if reqT[1] != reqT[2] and clk.t.time - reqT[3] < net.Z_A:
-        continue
-
-      _, stat, vNext = net.forward(reqT[0], reqT[1])
-
-      if stat == 2: # hit
-        latencies.append(reqT[4])
-        to_remove.append(i)
-
-
-        path = [n for n in net.pathTo(reqT[2], "b") if n != "b"]
-        item = reqT[0].i
-        for node in path:
-          if item in net.QFetch[node]:
-            net.QFetch[node].remove(item)
-            _, dhs = net.resolve(item, node)
-            net.dhCount += dhs
-            
-      elif stat == 1:  # delayed hit — its latency is recorded later, via
-        to_remove.append(i)  # net.dhLatencies, once the underlying fetch resolves
-      elif stat == "b":  # reached backing store — fetch resolves now
-        net.cpp(reqT[0].i, reqT[2], policyName, cpp="lce")
-        latencies.append(reqT[4])
-        to_remove.append(i)
-      elif stat == 0:  # miss, advance to next hop
-        Qreq[i][1] = vNext
-        Qreq[i][3] = clk.t.time
-        Qreq[i][4] += net.Z_A
-
-    for i in reversed(to_remove):
-      Qreq.pop(i)
-
-    if (req is None and not Qreq and seq.nextReq >= len(seq.S)
-        and burstsDone >= maxBursts):
-      break
-
-  return latencies + net.dhLatencies, seq
-
 
 def simulate(net, seq, cpp, leaf=0, policyName="TTL"):
   """Pure replay of an ALREADY-FINALISED sequence (no live decisions)
@@ -224,7 +146,13 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
   # net_opt's fresh clock before replaying, or every sendReq() check will
   # compare against a frozen, stale time and never match.
   seqFinal.t = net_opt.clk.t
-  latsOPT = simulate(net_opt, seqFinal, cpp="opt", leaf=leaf, policyName=policyName)
+
+  if seqType == "A":
+    latsOPT = opts.aOptSimulate(net_opt, seqFinal, cpp="aOPT", leaf=leaf, policyName=policyName)
+  elif seqType == "MW":
+    latsOPT = opts.mwOptSimulate(net_opt, seqFinal, cpp="mwOPT", leaf=leaf, policyName=policyName, UNIVERSE_SIZE = 6)
+  elif seqType == "n":
+    latsOPT = opts.nOptSimulate(net_opt, seqFinal, cpp="opt", leaf=leaf, policyName=policyName)
 
   return sum(latsLCE), sum(latsOPT), Z_B, k_T
 
@@ -232,38 +160,46 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
 if __name__ == "__main__":
   TTL_VAL = 6
   TMAX_VAL = np.inf
-  UNIVERSE_SIZE = 6
-  TYPE = "MW" # A = rho_A, MW = rho_MW
+  # usage: python "comp sim.py" [A|MW]
+  TYPE = sys.argv[1] if len(sys.argv) > 1 else "MW" # A = rho_A, MW = rho_MW
 
   # Geometric sweeps: log-spaced points span orders of magnitude with far
   # fewer configs than a linear range, which is what the asymptotic growth
   # in k and |V| needs. Widen by bumping the arange bounds; cost per config
   # grows like Vn*Z_A*(k+3), so the top corner dominates the total runtime.
-  krange = 2 ** np.arange(7)          # 1,2,4,8,16,32,64
-  Vrange = 2 ** np.arange(1, 7)       # 2,4,8,16,32,64
+  krange = 2 ** np.arange(8)          # 1,2,4,8,16,32,64,128
+  Vrange = 2 ** np.arange(1, 8)       # 2,4,8,16,32,64,128
   Z_Arange = 2 ** np.arange(6)        # 1,2,4,8,16,32
 
   rows = []
   epochs = len(krange) * len(Vrange) * len(Z_Arange)
   currepoch = 0
   start = time.time()
+  # Rows are written as they are computed. The expensive corners come last in
+  # the loop order, so a run that is cut short still leaves every cheaper
+  # config on disk and plottable, rather than losing the lot.
+  csvfile = open(f"{TYPE}_lowerbound_sweep.csv", "w", newline="")
+  writer = csv.writer(csvfile)
+  writer.writerow(["k", "Vn", "Z_A", "CR"])
   for k in krange:
     for Vn in Vrange:
+      # |I| = k_T + 1 (report Sec 5.2): exactly one item sits outside the
+      # network at all times, so the adversary always has a target. Same
+      # formula for every sequence type and every sweep point.
+      UNIVERSE_SIZE = int(Vn) * int(k) + 1
       for Z_A in Z_Arange:
-        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL, UNIVERSE_SIZE)
+        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL, UNIVERSE_SIZE, seqType=TYPE)
         CR = L_LCE / L_OPT if L_OPT else float("nan")
         rows.append([k, Vn, Z_A, CR])
+        writer.writerow([k, Vn, Z_A, CR]); csvfile.flush()
         exec_ = time.time()-start
-        print(f"[{currepoch} / {epochs}]{exec_:.2f} sec: k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
+        print(f"[{currepoch} / {epochs}]{exec_:.2f} sec: |I|={UNIVERSE_SIZE} k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
               f"L_LCE={L_LCE}  L_OPT={L_OPT}  CR={CR:.4f}")
         currepoch += 1
   
   print(f"SIM EXEC TIME TOTAL: {time.time() - start:.2f} seconds")
 
-  with open(f"{TYPE}_lowerbound_sweep.csv", "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["k", "Vn", "Z_A", "CR"])
-    writer.writerows(rows)
+  csvfile.close()
 
   print(f"\nCSV written: {TYPE}_lowerbound_sweep.csv")
 

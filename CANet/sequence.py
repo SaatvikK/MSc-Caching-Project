@@ -50,6 +50,13 @@ class Sequence:
     new_seq.nextReq = self.nextReq
     return new_seq
 
+  def ItemPerRequest(self) -> list:
+    itemsReqqed = []
+    for req in self.S:
+      itemsReqqed.append(req.i)
+
+    return itemsReqqed
+
   def sendReq(self):
     if self.nextReq >= len(self.S):
       return None
