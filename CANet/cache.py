@@ -29,6 +29,9 @@ class CacheState(Generic[V]):
   def get(self, i: I) -> Optional[Tuple[I, V]]:
     return next(((j, v) for (j, v) in self.C if j == i), None)
 
+  def getall(self) -> frozenset:
+    return frozenset([i[0] for i in self.C])
+
   def arrival(self, r_j: Request):
     if self.get(r_j.i) is not None:
       return 1 # hit

@@ -122,7 +122,7 @@ def simulate(net, seq, cpp, leaf=0, policyName="TTL"):
   return latencies + net.dhLatencies
 
 
-def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
+def runConfig(k, Vn, Z_A, ttl, tmax_val, Nmu, UniSize = 6, seqType = "A"):
   """Runs one (k, Vn, Z_A) sweep point end to end: builds the adversarial
   sequence against a fresh LCE network, then replays the finalised
   sequence against a fresh, independently-prefilled OPT network. Returns
@@ -139,6 +139,9 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
   elif seqType == "MW":
     latsLCE, seqFinal = sb.simulateManoharWilliams(net_lce, UniSize, Z_B, k, leaf, policyName)
 
+  elif seqType == "n":
+    latsLCE, seqFinal = sb.simulateRhon(net_lce, Nmu, UniSize, Z_B, k, leaf, policyName)
+
   net_opt = constructNet(Vn, Z_A, k, ttl, tmax_val)
   seqFinal.nextReq = 0
   # Sequence.sendReq() compares the current tick against seqFinal.t, which
@@ -152,7 +155,7 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
   elif seqType == "MW":
     latsOPT = opts.mwOptSimulate(net_opt, seqFinal, cpp="mwOPT", leaf=leaf, policyName=policyName, UNIVERSE_SIZE = 6)
   elif seqType == "n":
-    latsOPT = opts.nOptSimulate(net_opt, seqFinal, cpp="opt", leaf=leaf, policyName=policyName)
+    latsOPT = opts.nOptSimulate(net_opt, seqFinal, cpp="nOPT", leaf=leaf, policyName=policyName)
 
   return sum(latsLCE), sum(latsOPT), Z_B, k_T
 
@@ -160,8 +163,8 @@ def runConfig(k, Vn, Z_A, ttl, tmax_val, UniSize = 6, seqType = "A"):
 if __name__ == "__main__":
   TTL_VAL = 6
   TMAX_VAL = np.inf
-  # usage: python "comp sim.py" [A|MW]
-  TYPE = sys.argv[1] if len(sys.argv) > 1 else "MW" # A = rho_A, MW = rho_MW
+  # usage: python "comp sim.py" [A|MW|n]
+  TYPE = sys.argv[1] if len(sys.argv) > 1 else "MW" # A = rho_A, MW = rho_MW, n = rho_n
 
   # Geometric sweeps: log-spaced points span orders of magnitude with far
   # fewer configs than a linear range, which is what the asymptotic growth
@@ -170,9 +173,30 @@ if __name__ == "__main__":
   krange = 2 ** np.arange(8)          # 1,2,4,8,16,32,64,128
   Vrange = 2 ** np.arange(1, 8)       # 2,4,8,16,32,64,128
   Z_Arange = 2 ** np.arange(6)        # 1,2,4,8,16,32
+  Nmurange = np.array([1])            # only rho_n has a mu phase
+
+  if TYPE == "n":
+    # rho_n's family index is N_mu, not the network: Corollary 5.5.1 asks for
+    # CR -> infinity with x_0 = (k, |V|, Z_A) fixed. Empirically
+    # CR = C * N_mu / (k|V|), with C an O(1) constant (0.7 to 1.9 across this
+    # grid), so N_mu has to outgrow k|V| for the ratio to diverge -- hence a
+    # far longer N_mu range than network range, and no k = |V| > 16 (k|V| =
+    # 1024 would put the smallest-N_mu corner at CR ~ 1.5). Vn is tied to k
+    # because phi can only walk g down the line while k >= |V|.
+    krange = np.array([2, 3, 4, 6, 8, 12, 16])       # Vn = k
+    Z_Arange = np.array([1, 2, 4, 8, 12, 16, 24, 32])
+    # Half-octave steps over the same 1024..131072 interval: 15 points
+    # instead of 8, so the linear growth in N_mu is sampled densely enough
+    # to read the trend off the panel rather than infer it from 8 crosses.
+    Nmurange = np.unique(np.round(2 ** np.arange(10, 17.5, 0.5)).astype(int))
+    configs = [(Nmu, k, k, Z_A) for Nmu in Nmurange
+               for k in krange for Z_A in Z_Arange]
+  else:
+    configs = [(Nmu, k, Vn, Z_A) for Nmu in Nmurange for k in krange
+               for Vn in Vrange for Z_A in Z_Arange]
 
   rows = []
-  epochs = len(krange) * len(Vrange) * len(Z_Arange)
+  epochs = len(configs)
   currepoch = 0
   start = time.time()
   # Rows are written as they are computed. The expensive corners come last in
@@ -180,22 +204,21 @@ if __name__ == "__main__":
   # config on disk and plottable, rather than losing the lot.
   csvfile = open(f"{TYPE}_lowerbound_sweep.csv", "w", newline="")
   writer = csv.writer(csvfile)
-  writer.writerow(["k", "Vn", "Z_A", "CR"])
-  for k in krange:
-    for Vn in Vrange:
-      # |I| = k_T + 1 (report Sec 5.2): exactly one item sits outside the
-      # network at all times, so the adversary always has a target. Same
-      # formula for every sequence type and every sweep point.
-      UNIVERSE_SIZE = int(Vn) * int(k) + 1
-      for Z_A in Z_Arange:
-        L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL, UNIVERSE_SIZE, seqType=TYPE)
-        CR = L_LCE / L_OPT if L_OPT else float("nan")
-        rows.append([k, Vn, Z_A, CR])
-        writer.writerow([k, Vn, Z_A, CR]); csvfile.flush()
-        exec_ = time.time()-start
-        print(f"[{currepoch} / {epochs}]{exec_:.2f} sec: |I|={UNIVERSE_SIZE} k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
-              f"L_LCE={L_LCE}  L_OPT={L_OPT}  CR={CR:.4f}")
-        currepoch += 1
+  writer.writerow(["N_mu", "k", "Vn", "Z_A", "CR"])
+  for Nmu, k, Vn, Z_A in configs:
+    # |I| = k_T + 1 (report Sec 5.2): exactly one item sits outside the
+    # network at all times, so the adversary always has a target. Same
+    # formula for every sequence type and every sweep point.
+    UNIVERSE_SIZE = int(Vn) * int(k) + 1
+    L_LCE, L_OPT, Z_B, k_T = runConfig(int(k), int(Vn), int(Z_A), TTL_VAL, TMAX_VAL,
+                                       int(Nmu), UNIVERSE_SIZE, seqType=TYPE)
+    CR = L_LCE / L_OPT if L_OPT else float("nan")
+    rows.append([Nmu, k, Vn, Z_A, CR])
+    writer.writerow([Nmu, k, Vn, Z_A, CR]); csvfile.flush()
+    exec_ = time.time()-start
+    print(f"[{currepoch} / {epochs}]{exec_:.2f} sec: Nmu={Nmu} k={k} Vn={Vn} Z_A={Z_A} Z_B={Z_B}  "
+          f"L_LCE={L_LCE}  L_OPT={L_OPT}  CR={CR:.4f}")
+    currepoch += 1
   
   print(f"SIM EXEC TIME TOTAL: {time.time() - start:.2f} seconds")
 
@@ -206,11 +229,10 @@ if __name__ == "__main__":
 
 
 """
-FOR LAPTOP -- MY RHO:
-  krange = 2 ** np.arange(7)          # 1,2,4,8,16,32,64
-  Vrange = 2 ** np.arange(1, 7)       # 2,4,8,16,32,64
+for A and mw:
+  krange = 2 ** np.arange(8)          # 1,2,4,8,16,32,64,128
+  Vrange = 2 ** np.arange(1, 8)       # 2,4,8,16,32,64,128
   Z_Arange = 2 ** np.arange(6)        # 1,2,4,8,16,32
-
-FOR LAPTOP -- RHO_MW:
+  Nmurange = 1 # set to 1 unless you're testing uncompetitiveness
 
 """

@@ -68,16 +68,18 @@ class CacheNetwork:
   def prefill(self, k_T: int):
     # Populate each cache, in vertex order, with a size-k block of the
     # first k_T items (cache index idx gets items [idx*k+1 .. idx*k+k]),
-    # all admitted at the same initial ttl — matching the report's
-    # worked (2,2) example, where every prefilled entry starts at the
-    # same TTL (e.g. v0={(a,6),(b,6)}, v1={(c,6),(d,6)}). Ties among
-    # equal-TTL entries are broken deterministically by ascending item
-    # index (see policies.TTL), not left to frozenset iteration order.
+    # every entry stamped with the current clock reading — matching the
+    # report's worked (2,2) example, where every prefilled entry starts
+    # on the same footing (e.g. v0={(a,0),(b,0)}, v1={(c,0),(d,0)}), so
+    # the whole prefilled block is uniformly the oldest thing resident.
+    # Ties among equal-stamp entries are broken deterministically by
+    # ascending item index (see policies.TTL), not left to frozenset
+    # iteration order.
     for idx, v in enumerate(self.G[0]):
       cache = self.M[v]
       size = cache.size
       lo = idx * size + 1
-      entries = frozenset((I(item=it), self.ttl) for it in range(lo, lo + size))
+      entries = frozenset((I(item=it), self.clk.t.time) for it in range(lo, lo + size))
       self.M[v] = CacheState(t=cache.t, C=entries, size=size)
 
   def nextHop(self, vCurr):
@@ -139,14 +141,18 @@ class CacheNetwork:
     return req, 0, self.nextHop(v)
 
   def cpp(self, item: I, leaf, policyName: str = "TTL", cpp: str = "lce", seq: Sequence = None):
-    """`seq` is only consulted by mwOPT, which needs the *finalised* request
-    sequence to work out which item is never requested again (see mwOPT)."""
+    """`seq` is only consulted by mwOPT and nOPT, which need the *finalised*
+    request sequence to work out which item is never requested again (mwOPT)
+    and which item the whole sequence is built around (nOPT)."""
     if cpp == "lce": self.lce(item, leaf, policyName)
     elif cpp == "aOPT": self.aOPT(item, leaf, policyName)
     elif cpp == "mwOPT":
       assert seq is not None, "mwOPT needs the finalised sequence to locate j"
       self.mwOPT(item, seq, leaf, policyName)
-    else: raise ValueError(f"unknown CPP '{cpp}' (have: lce, aOPT, mwOPT)")
+    elif cpp == "nOPT":
+      assert seq is not None, "nOPT needs the finalised sequence to locate g"
+      self.nOPT(item, seq, leaf, policyName)
+    else: raise ValueError(f"unknown CPP '{cpp}' (have: lce, aOPT, mwOPT, nOPT)")
 
 
 # CPPs
@@ -178,7 +184,7 @@ class CacheNetwork:
       # admit an item at this node
       cache = self.M[node]
       old = TTL(cache) # TTL(cache) returns the (item, TTL) tuple
-      self.M[node] = cache.replace(rmv=old, add=(item, self.clk.t.time + self.ttl))
+      self.M[node] = cache.replace(rmv=old, add=(item, self.clk.t.time))
 
   def mwOPT(self, item: I, seq: Sequence, leaf, policyName: str = "TTL"):
     """OPT for rho_MW (report Lemmas 5.2 and 5.3).
@@ -247,14 +253,48 @@ class CacheNetwork:
     victim = TTL(cache)  # None iff this cache has a free slot, so nothing need be evicted
     rotations = 0
     while victim is not None and victim[0] != j and rotations < cache.size:
-      cache = cache.replace(rmv=victim, add=(victim[0], self.clk.t.time + self.ttl))
+      cache = cache.replace(rmv=victim, add=(victim[0], self.clk.t.time))
       victim = TTL(cache)
       rotations += 1
 
     assert victim is None or victim[0] == j, (
       f"TTL never surfaced j={j} at v{vj} after {rotations} rotations"
     )
-    self.M[vj] = cache.replace(rmv=victim, add=(item, self.clk.t.time + self.ttl))
+    self.M[vj] = cache.replace(rmv=victim, add=(item, self.clk.t.time))
+
+  def nOPT(self, item: I, seq: Sequence, leaf, policyName: str = "TTL"):
+    """OPT for rho_n (report Theorem 5.5.1).
+
+    O's whole strategy is one move: at the return of the opening pure request
+    it places g — seq.S[0], the item phi spends the rest of the sequence
+    pushing to the back of LCE's network — into the leaf cache, and never
+    rearranges again. Every mu request is then a depth-0 hit costing nothing,
+    while LCE pays d * Z_A for each, so L(O, rho_n) stays constant in N_mu.
+
+    Simpler than mwOPT in two ways: there is no marked set, since nothing but
+    g is requested after phi, and no rotation is needed to name a victim,
+    since whichever entry TTL surfaces at v0 is expendable."""
+    path = [n for n in self.pathTo(leaf, "b") if n != "b"]
+
+    for node in path:
+      # DH accounting: clear the in-flight fetch marker for this item at
+      # this node (if any) and resolve any delayed hits registered against it.
+      if item in self.QFetch[node]:
+        self.QFetch[node].remove(item)
+        _, dhs = self.resolve(item, node)
+        self.dhCount += dhs
+
+    # Only g earns the single rearrangement; every other fetch — phi's bait
+    # items, which full-miss here because O's caches never move — is
+    # DH-accounted only.
+    g = seq.S[0].i
+    if self.arranged or item != g:
+      return
+    self.arranged = True
+
+    v0 = path[0]
+    cache = self.M[v0]
+    self.M[v0] = cache.replace(rmv=TTL(cache), add=(g, self.clk.t.time))
 
 
     
