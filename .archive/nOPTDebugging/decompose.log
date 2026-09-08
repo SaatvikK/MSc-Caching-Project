@@ -1,0 +1,12 @@
+k=|V|=  2  phi: LCE=        32 OPT=      32  mu: LCE=      294912 OPT=       0  CR=  9217.00  [22s]
+k=|V|=  3  phi: LCE=        80 OPT=      64  mu: LCE=      557056 OPT=       0  CR=  8705.25  [43s]
+k=|V|=  4  phi: LCE=       168 OPT=     112  mu: LCE=      819256 OPT=      -8  CR=  7879.08  [64s]
+k=|V|=  6  phi: LCE=       544 OPT=     360  mu: LCE=     1343696 OPT=      16  CR=  3575.11  [86s]
+k=|V|=  8  phi: LCE=      1328 OPT=     952  mu: LCE=     1868128 OPT=      32  CR=  1899.85  [108s]
+k=|V|= 12  phi: LCE=      5488 OPT=    4536  mu: LCE=     2916952 OPT=    -168  CR=   669.06  [132s]
+k=|V|= 16  phi: LCE=     14440 OPT=   12656  mu: LCE=     3966400 OPT=     640  CR=   299.40  [157s]
+k=|V|= 24  phi: LCE=     53304 OPT=   49088  mu: LCE=     6058856 OPT=   -5656  CR=   140.73  [187s]
+k=|V|= 32  phi: LCE=    134976 OPT=  127304  mu: LCE=     8172176 OPT=    7056  CR=    61.83  [225s]
+k=|V|= 48  phi: LCE=    523568 OPT=  505912  mu: LCE=    12362088 OPT=   -6232  CR=    25.79  [300s]
+k=|V|= 64  phi: LCE=   1294400 OPT= 1262664  mu: LCE=    16593488 OPT=   41744  CR=    13.71  [451s]
+wrote rhon_decomposition.csv in 7.5 min
