@@ -1,6 +1,6 @@
 ## Disseratation Link
 You can read the final dissertation here:
-https://github.com/SaatvikK/MSc-Caching-Project/blob/main/Masters%20Dissertation%20Caching.pdf
+https://github.com/SaatvikK/MSc-Caching-Project/blob/companal/Masters%20Dissertation%20Caching.pdf
 
 ABSTRACT:
 This report formalises a so-called `delayed-hits-aware' line-network model, characterised by the number of caches $|V|$, the per-cache capacity $k$, and the inter-cache delay $Z_A$. It further establishes two lower-bounds on the competitive ratio of deterministic online placement
@@ -11,6 +11,6 @@ This work was initially motivated by the fact that caching has become vital in t
 The final contribution of this report is a proof that the LCE placement policy, is, in fact, an uncompetitive online algorithm. By providing a sequence that forces the LCE's latency to grow, not with network-specific parameters, but with \textit{sequence}-specific parameters, it is shown that the LCE latency diverges from the optimal algorithm's latency, thereby proving uncompetitiveness. This lower-bound, and subsequent uncompetitive proof are two novel contributions to caching that work towards closing a major gap in the current literature. All results are then empirically validated by simulation work.
 
 ## Final simulation
-The final simulation is found in the `/CANet/` folder. It includes the core, generalised framework codebase, plus the project-specific simulation.
 
-Other root folders such as `/dataset analysis`, `/dh`, `nodh`, etc. are old version or deprecated or not relevant to the project any longer.
+
+FOR THE FINAL SIMULATION CODE, SWITCH TO THE `companal` BRANCH. 
